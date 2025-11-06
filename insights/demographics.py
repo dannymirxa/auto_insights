@@ -3,7 +3,7 @@ import pandas as pd
 
 class DemographicsInsights:
     def __init__(self, df: pd.DataFrame, demographic_cols: List[str], metric_columns: List[str], num_spots: int = 3):
-        self.df = df
+        self.df = df.copy()
         self.demographic_cols = demographic_cols
         self.metric_columns = metric_columns
         self.output: dict[str, dict] = {}   # instance attribute
@@ -86,7 +86,7 @@ class DemographicsInsights:
         df_grouped = self.df[self.metric_columns]
         df = df_grouped.corr().reset_index()
         self.output.setdefault(
-            "_correlation_by_drivers", []
+            "correlation_by_drivers", []
             ).append({
                 "correlation_matrix": df.to_dict(orient='records')
             })
