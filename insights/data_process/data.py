@@ -1,7 +1,6 @@
 import pandas as pd
 from typing import List, Dict
 
-
 def data_availability(df: pd.DataFrame, metric_columns: List[str]) -> Dict:
     """
     Determine missing columns and non-numeric columns.
@@ -51,3 +50,27 @@ def preprocess_question_qcode(df: pd.DataFrame) -> pd.DataFrame:
     out['qcode'] = out['qcode'].astype(str).str.strip()
 
     return out
+
+def df_qcode_agg_into_driver(df: pd.DataFrame, df_code: pd.DataFrame) -> pd.DataFrame:
+    # Step 1: Create qcode → driver mapping
+    qcode_to_driver = df_code.set_index('qcode')['driver'].to_dict()
+
+    # Step 2: Identify metric columns in df that are in df_code
+    metric_columns = [col for col in df.columns if col in qcode_to_driver]
+
+    # Step 3: Group metric columns by driver
+    driver_groups: Dict[str, List[str]] = {}
+    for qcode in metric_columns:
+        driver = qcode_to_driver[qcode]
+        driver_groups.setdefault(driver, []).append(qcode)
+
+    # Step 4: Aggregate scores by driver (mean)
+    driver_aggregates = pd.DataFrame()
+    for driver, qcodes in driver_groups.items():
+        driver_aggregates[driver] = df[qcodes].mean(axis=1)
+
+    # Step 5: Combine with non-metric columns
+    non_metric_columns = [col for col in df.columns if col not in metric_columns]
+    df_final = pd.concat([df[non_metric_columns], driver_aggregates], axis=1)
+
+    return df_final

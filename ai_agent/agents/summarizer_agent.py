@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from ai_agent.model import OPENAI_MODEL
 from ai_agent.utils.rag.retriever import retriever
-from src.insights import correlations, data, findings, hotspots
+from insights.data_process import data
+from insights.drivers import correlations, findings, hotspots
 from ai_agent.schemas import SummarySuccess, SummaryInvalidRequest, SummaryResponse
 
 logfire.configure(token=os.getenv("LOGFIRE_API_KEY"))  
