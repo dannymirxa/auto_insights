@@ -45,7 +45,7 @@ def main():
     insights = DemographicsInsights(df, demographic_col, df_qcode['driver'].unique(), df_qcode)
     output = insights.get_output()
 
-    with open("insights/test_output/demogprahics/output_demographics.json", "w") as json_file:
+    with open("insights/test_output/demographics/output_demographics.json", "w") as json_file:
         json.dump(output, json_file, indent=4)
 
     print(output)
