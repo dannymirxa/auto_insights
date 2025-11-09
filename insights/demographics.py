@@ -12,14 +12,14 @@ class DemographicsInsights:
         self.output: dict[str, dict] = {}   # instance attribute
 
         self.qcodes = self.df_qcode_map["qcode"].unique().tolist()
-        self.essential_columns = self.demographic_cols + self.qcodes
+        self.essential_columns = ["respondent id"] + self.demographic_cols + self.qcodes
 
         # Validate mapping
         if 'qcode' not in self.df_qcode_map.columns or 'driver' not in self.df_qcode_map.columns:
             raise ValueError("df_qcode_map must contain 'qcode' and 'driver' columns")
 
         self.df_melted_by_qcode = self.df[self.essential_columns].melt(
-                            id_vars= self.demographic_cols,
+                            id_vars= ["respondent id"] + self.demographic_cols,
                             value_vars= self.qcodes, 
                             var_name='qcode',
                             value_name='score'
@@ -27,7 +27,7 @@ class DemographicsInsights:
         
         self.df_unpivot = pd.merge(self.df_melted_by_qcode, self.df_qcode_map, left_on="qcode", right_on="qcode", how="inner")
         self.df_unpivot['score_percent'] = ((self.df_unpivot["score"] - 1) / (7 -1)) * 100
-        self.df_unpivot
+
     def _average_all_drivers_score_by_demographic(self) -> dict:
         for demographics_col in self.demographic_cols:
             df_grouped = self.df_unpivot.groupby(demographics_col)["score"].mean().reset_index()
@@ -98,8 +98,10 @@ class DemographicsInsights:
                     })
                 
     def _correlation_by_drivers(self) -> dict:
-        
-        df_grouped = self.df_unpivot.pivot(columns="driver", values="score")
+        df_grouped = (self.df_unpivot.groupby(["respondent id", "driver"])["score"]
+                    .mean().reset_index()
+                    .pivot(index = "respondent id", columns="driver", values="score"))[self.metric_columns]
+
         df = df_grouped.corr().reset_index()
         self.output.setdefault(
             "correlation_by_drivers", []
@@ -110,9 +112,12 @@ class DemographicsInsights:
     def _correlation_by_demographics_agg_scores(self) -> dict:
         for demographics_col in self.demographic_cols:
             df_grouped = (
-                self.df.groupby(demographics_col)[self.metric_columns]
-                .mean()
-            )
+                    self.df_unpivot.groupby([demographics_col] + ["driver"])["score"]
+                    .mean()
+                    .reset_index()
+                    .pivot(index = demographics_col, columns="driver", values="score")
+                    )[self.metric_columns]
+
             # self.output[f"drivers_scores_by_demographics_and_drivers"] = {f"{demographics_col}": df_grouped.to_dict(orient='records')}
             df = df_grouped.corr().reset_index()
             self.output.setdefault(
@@ -124,8 +129,8 @@ class DemographicsInsights:
 
 
     def get_output(self) -> dict[str, dict]:
-        self._average_all_drivers_score_by_demographic()
-        self._drivers_scores_by_demographics_and_drivers()
+        # self._average_all_drivers_score_by_demographic()
+        # self._drivers_scores_by_demographics_and_drivers()
         self._brightspots_hotspots_average_all_drivers_score_by_demographic()
         self._brightspots_hotspots_drivers_scores_by_demographics_and_drivers()
         self._correlation_by_drivers()

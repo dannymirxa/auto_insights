@@ -9,14 +9,6 @@ from insights.data_process import data
 
 from insights.data_process import data
 
-def preprocess_data(data_path: str, map_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    df = pd.read_excel(data_path, skiprows=1)
-    df_map = pd.read_excel(map_path)
-    df_qcode = pd.read_excel(data_path, header=None)
-    df_qcode = data.preprocess_question_qcode(df_qcode)
-    df_driver_qcode = pd.DataFrame.merge(df_map, df_qcode, on="qcode", how="inner")
-
-    return df, df_driver_qcode
 
 def get_columns_by_driver(drivers: List[str], config: List[dict]) -> List[str]:
     # Combine metric columns for all specified drivers.
