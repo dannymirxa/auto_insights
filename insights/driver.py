@@ -2,39 +2,41 @@ from typing_extensions import List
 import pandas as pd
 
 class TransformationDriverInsights:
-    def __init__(self, df: pd.DataFrame, demographic_cols: List[str], df_qcode_map: pd.DataFrame, num_spots: int = 3):
+    def __init__(self, df: pd.DataFrame, demographic_cols: List[str], df_map: pd.DataFrame, num_spots: int = 3):
         self.df = df.copy()
         self.demographic_cols = demographic_cols
-        self.df_qcode_map = df_qcode_map.copy()
+        self.df_qcode_map = df_map.copy()
         self.num_spots = num_spots
+        
         self.output: dict[str, dict] = {}
 
-        self.qcodes = self.df_qcode_map["qcode"].tolist()
+        self.qcodes = self.df_qcode_map["qcode"].unique().tolist()
         self.essential_columns = self.demographic_cols + self.qcodes
 
         # Validate mapping
         if 'qcode' not in self.df_qcode_map.columns or 'driver' not in self.df_qcode_map.columns:
             raise ValueError("df_qcode_map must contain 'qcode' and 'driver' columns")
 
-        self.df_melted = self.df[self.essential_columns].melt(
+        self.df_melted_by_qcode = self.df[self.essential_columns].melt(
                             id_vars= self.demographic_cols,
                             value_vars= self.qcodes, 
                             var_name='qcode',
                             value_name='score'
                         )
         
-        self.df_final = pd.merge(self.df_melted, self.df_qcode_map, left_on="qcode", right_on="qcode", how="inner")
+        self.df_unpivot = pd.merge(self.df_melted_by_qcode, self.df_qcode_map, left_on="qcode", right_on="qcode", how="inner")
+        self.df_unpivot['score_percent'] = ((self.df_unpivot["score"] - 1) / (7 -1)) * 100
 
     def _average_all_qcodes_score_by_driver(self) -> None:
-        df_grouped = self.df_final.groupby('driver')["score"].mean()
+        df_grouped = self.df_unpivot.groupby('driver')["score"].mean()
         self.output[f"average_all_qcodes_score_by_driver"] = df_grouped.to_dict()
 
     def _average_all_qcodes_score_by_qcode(self) -> None:
-        df_grouped = self.df_final.groupby('qcode')["score"].mean()
+        df_grouped = self.df_unpivot.groupby('qcode')["score"].mean()
         self.output[f"average_all_qcodes_score_by_qcode"] = df_grouped.to_dict()
 
     def _brightspots_hotspots_average_all_qcodes_score_by_driver(self) -> None:
-        df_grouped = self.df_final.groupby('driver')["score"].mean()
+        df_grouped = self.df_unpivot.groupby('driver')["score"].mean()
         top = df_grouped.nlargest(self.num_spots)
         bottom = df_grouped.nsmallest(self.num_spots)
 
@@ -46,7 +48,7 @@ class TransformationDriverInsights:
             })
     
     def _brightspots_hotspots_average_all_score_by_driver_and_qcodes(self) -> None:
-        qcode_avg = self.df_final.groupby(["driver", "qcode"], as_index=False)["score"].mean()
+        qcode_avg = self.df_unpivot.groupby(["driver", "qcode"], as_index=False)["score"].mean()
         driver_avg = qcode_avg.groupby("driver", as_index=False)["score"].mean().rename(columns={"score": "driver_avg"})
 
         merged = qcode_avg.merge(driver_avg, on="driver")
