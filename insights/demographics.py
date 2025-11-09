@@ -76,7 +76,6 @@ class DemographicsInsights:
                 .mean()
                 .reset_index()
                 .pivot(index=demographics_col, columns="driver", values="score")
-                .reset_index()
             )
             for group, row in df_grouped.iterrows():
                 top = row.nlargest(self.num_spots)
@@ -99,7 +98,8 @@ class DemographicsInsights:
                     })
                 
     def _correlation_by_drivers(self) -> dict:
-        df_grouped = self.df[self.metric_columns]
+        
+        df_grouped = self.df_unpivot.pivot(columns="driver", values="score")
         df = df_grouped.corr().reset_index()
         self.output.setdefault(
             "correlation_by_drivers", []
