@@ -23,7 +23,7 @@ def main():
 
     df_driver = data.df_qcode_agg_into_driver(df_new, df_map)
     
-    insights = TransformationDriverInsights(df_new, demographic_col, df_map, num_spots=3)
+    insights = TransformationDriverInsights(df_new=df_new, df_old=df_old, demographic_cols=demographic_col, df_map=df_map, num_spots=3)
     output = insights.get_output()
 
     with open("insights/test_output/drivers/output_driver.json", "w") as json_file:
