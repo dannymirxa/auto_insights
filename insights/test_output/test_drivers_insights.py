@@ -10,18 +10,20 @@ from insights.data_process import data
 from insights.driver import TransformationDriverInsights
 
 def main():
-    data_file = "/mnt/c/Projects/auto_insights/data/TIAA Cycle 3+4 (Aggregate).xlsx"
+    data_file_new = "data/TIAA Cycle 3+4 (Aggregate).xlsx"
+    data_file_old = "data/TIAA Cycle 2 - Accenture.xlsx"
     map_file = "data/TGPS_driver_qcode_percentile_question.csv"
 
     demographic_col = ["Location", "People Manager"]
 
 
-    df = pd.read_excel(data_file, skiprows=1)
+    df_new = pd.read_excel(data_file_new, skiprows=1)
+    df_old = pd.read_excel(data_file_old, skiprows=1)
     df_map = pd.read_csv(map_file)
 
-    df_driver = data.df_qcode_agg_into_driver(df, df_map)
+    df_driver = data.df_qcode_agg_into_driver(df_new, df_map)
     
-    insights = TransformationDriverInsights(df, demographic_col, df_map, num_spots=3)
+    insights = TransformationDriverInsights(df_new, demographic_col, df_map, num_spots=3)
     output = insights.get_output()
 
     with open("insights/test_output/drivers/output_driver.json", "w") as json_file:
