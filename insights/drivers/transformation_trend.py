@@ -6,7 +6,12 @@ from typing import Any, Dict, List, Tuple
 
 class TransformationTrendSummary:
     """
-    Stateful trend transformation summarizer. Holds train_data and survey.
+    Pandas-expressive trend transformation summarizer.
+
+    Responsibilities:
+    - Hold raw train_data and selected survey id
+    - Convert raw data into an enriched, analysis-friendly DataFrame for trends
+    - Prepare JSON records summarizing changes and ranks
     """
 
     def __init__(self, train_data: pd.DataFrame, survey: int):
@@ -15,7 +20,10 @@ class TransformationTrendSummary:
 
     def build_prompt(self) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
         """
-        Execute full pipeline: convert data, prepare subset, and emit JSON records.
+        Execute the full pipeline end-to-end:
+        1) Convert & enrich the input data
+        2) Prepare the subset for the requested survey
+        3) Create JSON records suitable for prompt consumption
         """
         df = self.convert_data(self.train_data.copy())
         df_demo = self._prepare_for_json(df, self.survey)
@@ -23,64 +31,93 @@ class TransformationTrendSummary:
         return df_demo, final_json
 
     @staticmethod
-    def _clean_empty(d):
+    def _clean_empty(d: Any) -> Any:
+        """
+        Recursively drop empty dict keys and list items from JSON-like structures.
+        """
         if isinstance(d, dict):
             return {k: v for k, v in ((k, TransformationTrendSummary._clean_empty(v)) for k, v in d.items()) if v}
         if isinstance(d, list):
             return [v for v in map(TransformationTrendSummary._clean_empty, d) if v]
         return d
 
-    # ----------------------------
-    # Data conversion (previously convert_data)
-    # ----------------------------
+    # ------------------------------------------------------------------------------------
+    # Data conversion (expressive, step-by-step; preserves original business logic)
+    # ------------------------------------------------------------------------------------
     def convert_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Orchestrates data transformations without changing underlying logic.
+        Enrich the raw dataset with analysis fields using clear, pandas-friendly steps.
+
+        Operations performed:
+        - Sort by Survey (if present) to stabilize diffs
+        - Compute cycle-over-cycle score differences within each (Qcode/qcode, Type)
+        - Rank drivers per (Type, Survey)
+        - Compute element-wise percentile thresholds and derive driver confidence levels
+        - Compute survey-level quantiles for score_diff and flag outlier-like changes
+        - Label question sentiment from Score compared against element-wise thresholds
+        - Adjust sentiment for reversed scales (supports 'Reversed' and 'reversed')
+        - Replace 'number' with 'level' for specific drivers in text fields
+        - Label change-from-last-cycle for both Questions and Drivers using score_diff
+        - Sanitize Description text, drop helper quantile columns
         """
         df = df.copy()
 
-        # sort by survey before diff
+        # 1) Sort by Survey before diff to ensure correct temporal ordering
         if "Survey" in df.columns:
             df = df.sort_values("Survey")
 
-        # score diff per Qcode/Type
+        # 2) Score difference within each (Qcode/qcode, Type) group across cycles
         group_cols = ["Qcode", "Type"] if "Qcode" in df.columns else ["qcode", "Type"]
-        df.loc[:, "score_diff"] = df.groupby(group_cols)["Score"].diff(1)
+        df["score_diff"] = df.groupby(group_cols)["Score"].diff(1)
 
-        # driver ranks per survey
-        df.loc[:, "driver_rank"] = df.groupby(["Type", "Survey"])["Score"].rank(ascending=False, method="dense").astype(
-            "Int64"
+        # 3) Rank drivers by Score per (Type, Survey); keep ranks only for Driver rows
+        df["driver_rank"] = (
+            df.groupby(["Type", "Survey"])["Score"]
+            .rank(ascending=False, method="dense")
+            .astype("Int64")
         )
-        df.loc[df.Type != "Driver", "driver_rank"] = np.nan
+        df.loc[df["Type"] != "Driver", "driver_rank"] = np.nan
 
-        # deduplicate
+        # 4) Remove duplicate rows to avoid noisy downstream operations
         df = df.drop_duplicates(keep="first").reset_index(drop=True)
 
-        # confidence level for drivers (element-wise thresholds preserved)
-        off_track_s = pd.to_numeric(df["Off Track Percentile"], errors="coerce") if "Off Track Percentile" in df.columns else pd.Series(np.nan, index=df.index)
-        on_track_s = pd.to_numeric(df["On Track Percentile"], errors="coerce") if "On Track Percentile" in df.columns else pd.Series(np.nan, index=df.index)
-        high_perf_s = pd.to_numeric(df["High Performance Percentile"], errors="coerce") if "High Performance Percentile" in df.columns else pd.Series(np.nan, index=df.index)
+        # 5) Confidence level for drivers using element-wise thresholds (preserved logic)
+        off_track_s = (
+            pd.to_numeric(df["Off Track Percentile"], errors="coerce")
+            if "Off Track Percentile" in df.columns
+            else pd.Series(np.nan, index=df.index)
+        )
+        on_track_s = (
+            pd.to_numeric(df["On Track Percentile"], errors="coerce")
+            if "On Track Percentile" in df.columns
+            else pd.Series(np.nan, index=df.index)
+        )
+        high_perf_s = (
+            pd.to_numeric(df["High Performance Percentile"], errors="coerce")
+            if "High Performance Percentile" in df.columns
+            else pd.Series(np.nan, index=df.index)
+        )
 
-        df.loc[(df.Type == "Driver") & (df.Score >= off_track_s), "employee_confidence_level"] = "Low"
-        df.loc[(df.Type == "Driver") & (df.Score >= on_track_s), "employee_confidence_level"] = "Moderate"  # bucket 1
-        df.loc[(df.Type == "Driver") & (df.Score >= (high_perf_s - 10)), "employee_confidence_level"] = "Strong"  # bucket 2
-        df.loc[(df.Type == "Driver") & (df.Score >= high_perf_s), "employee_confidence_level"] = "Very Strong"
-        df.loc[(df.Type == "Driver") & (df.Score < off_track_s), "employee_confidence_level"] = "Very Low"
+        is_driver = df["Type"] == "Driver"
+        df.loc[is_driver & (df["Score"] >= off_track_s), "employee_confidence_level"] = "Low"
+        df.loc[is_driver & (df["Score"] >= on_track_s), "employee_confidence_level"] = "Moderate"  # bucket 1
+        df.loc[is_driver & (df["Score"] >= (high_perf_s - 10)), "employee_confidence_level"] = "Strong"  # bucket 2
+        df.loc[is_driver & (df["Score"] >= high_perf_s), "employee_confidence_level"] = "Very Strong"
+        df.loc[is_driver & (df["Score"] < off_track_s), "employee_confidence_level"] = "Very Low"
 
-        # quantiles for score_diff (pandas 2 named agg)
+        # 6) Survey-level quantiles for score_diff and outlier flags (exclusive bounds)
         qdiff = self._compute_quantiles(df, metric="score_diff")
         df = pd.merge(df, qdiff, on=["Survey"])
+        df["score_diff_flag"] = np.where((df["score_diff"] < df["q1"]) | (df["score_diff"] > df["q3"]), df["score_diff"], np.nan)
 
-        # outlier flag for score_diff outside [q1, q3]
-        df.loc[:, "score_diff_flag"] = np.where((df.score_diff < df.q1) | (df.score_diff > df.q3), df.score_diff, np.nan)
+        # 7) Question sentiment from Score vs element-wise thresholds
+        is_question = df["Type"] == "Question"
+        df.loc[is_question & (df["Score"] >= on_track_s), "Employee Perception"] = "Positive"
+        df.loc[is_question & (df["Score"] >= high_perf_s), "Employee Perception"] = "Very Positive"
+        df.loc[is_question & (df["Score"] < on_track_s), "Employee Perception"] = "Negative"
+        df.loc[is_question & (df["Score"] < off_track_s), "Employee Perception"] = "Very Negative"
 
-        # sentiment for questions based on Score thresholds
-        df.loc[(df.Type == "Question") & (df.Score >= on_track_s), "Employee Perception"] = "Positive"
-        df.loc[(df.Type == "Question") & (df.Score >= high_perf_s), "Employee Perception"] = "Very Positive"
-        df.loc[(df.Type == "Question") & (df.Score < on_track_s), "Employee Perception"] = "Negative"
-        df.loc[(df.Type == "Question") & (df.Score < off_track_s), "Employee Perception"] = "Very Negative"
-
-        # reversed scales: support both 'Reversed' and 'reversed'
+        # 8) Adjust sentiments for reversed-scale questions (supports 'Reversed' and 'reversed')
         if "Reversed" in df.columns:
             rev = df["Reversed"].astype(bool)
         elif "reversed" in df.columns:
@@ -88,13 +125,17 @@ class TransformationTrendSummary:
         else:
             rev = pd.Series(False, index=df.index)
 
-        mask_q = df.Type == "Question"
-        df.loc[mask_q & rev & (df["Employee Perception"] == "Positive"), "Employee Perception"] = "Negative"
-        df.loc[mask_q & rev & (df["Employee Perception"] == "Very Positive"), "Employee Perception"] = "Very Negative"
-        df.loc[mask_q & rev & (df["Employee Perception"] == "Negative"), "Employee Perception"] = "Positive"
-        df.loc[mask_q & rev & (df["Employee Perception"] == "Very Negative"), "Employee Perception"] = "Very Positive"
+        pos_mask = df["Employee Perception"] == "Positive"
+        vpos_mask = df["Employee Perception"] == "Very Positive"
+        neg_mask = df["Employee Perception"] == "Negative"
+        vneg_mask = df["Employee Perception"] == "Very Negative"
 
-        # replace 'number' -> 'level' for specific drivers
+        df.loc[is_question & rev & pos_mask, "Employee Perception"] = "Negative"
+        df.loc[is_question & rev & vpos_mask, "Employee Perception"] = "Very Negative"
+        df.loc[is_question & rev & neg_mask, "Employee Perception"] = "Positive"
+        df.loc[is_question & rev & vneg_mask, "Employee Perception"] = "Very Positive"
+
+        # 9) Replace 'number' -> 'level' for specific drivers in Question/Description
         if "Driver" in df.columns:
             mask_special = df["Driver"].isin(["Fear & Frustration", "Passion & Drive"])
             if "Question" in df.columns:
@@ -106,36 +147,40 @@ class TransformationTrendSummary:
                     "number", "level", case=False, regex=False
                 )
 
-        # question score_diff trends
-        df.loc[(df.score_diff > 0) & (df.Type == "Question"), "change_from_last_cycle"] = "slightly better"
-        df.loc[(df.score_diff >= 10) & (df.Type == "Question"), "change_from_last_cycle"] = "better"
-        df.loc[(df.score_diff >= 20) & (df.Type == "Question"), "change_from_last_cycle"] = "significantly better"
-        df.loc[(df.score_diff < 0) & (df.Type == "Question"), "change_from_last_cycle"] = "slightly worsened"
-        df.loc[(df.score_diff < -10) & (df.Type == "Question"), "change_from_last_cycle"] = "worsened"
-        df.loc[(df.score_diff < -20) & (df.Type == "Question"), "change_from_last_cycle"] = "significantly worsened"
+        # 10) Question score_diff trends (overwriting order preserves highest-priority label)
+        change_col_q = "change_from_last_cycle"
+        df.loc[is_question & (df["score_diff"] > 0), change_col_q] = "slightly better"
+        df.loc[is_question & (df["score_diff"] >= 10), change_col_q] = "better"
+        df.loc[is_question & (df["score_diff"] >= 20), change_col_q] = "significantly better"
+        df.loc[is_question & (df["score_diff"] < 0), change_col_q] = "slightly worsened"
+        df.loc[is_question & (df["score_diff"] < -10), change_col_q] = "worsened"
+        df.loc[is_question & (df["score_diff"] < -20), change_col_q] = "significantly worsened"
 
-        # driver score_diff trends
-        col = "driver_performance_change_from_last_cycle"
-        df.loc[(df.Type == "Driver") & (df.score_diff > 0), col] = "slightly better"
-        df.loc[(df.Type == "Driver") & (df.score_diff >= 10), col] = "better"
-        df.loc[(df.Type == "Driver") & (df.score_diff >= 16), col] = "significantly better"
-        df.loc[(df.Type == "Driver") & (df.score_diff < 0), col] = "slightly worsened"
-        df.loc[(df.Type == "Driver") & (df.score_diff < -10), col] = "worsened"
-        df.loc[(df.Type == "Driver") & (df.score_diff < -20), col] = "significantly worsened"
-        df.loc[(df.Type == "Driver") & (df.score_diff == 0), col] = "no change"
+        # 11) Driver score_diff trends (uses separate result column)
+        change_col_d = "driver_performance_change_from_last_cycle"
+        df.loc[is_driver & (df["score_diff"] > 0), change_col_d] = "slightly better"
+        df.loc[is_driver & (df["score_diff"] >= 10), change_col_d] = "better"
+        df.loc[is_driver & (df["score_diff"] >= 16), change_col_d] = "significantly better"
+        df.loc[is_driver & (df["score_diff"] < 0), change_col_d] = "slightly worsened"
+        df.loc[is_driver & (df["score_diff"] < -10), change_col_d] = "worsened"
+        df.loc[is_driver & (df["score_diff"] < -20), change_col_d] = "significantly worsened"
+        df.loc[is_driver & (df["score_diff"] == 0), change_col_d] = "no change"
 
-        # sanitize description
+        # 12) Tidy Description text (strip bullets and leading spaces)
         if "Description" in df.columns:
             df["Description"] = df["Description"].str.replace("* ", "", case=False, regex=False)
             df["Description"] = df["Description"].str.replace("^ ", "", case=False, regex=False)
 
-        # cleanup helper cols
+        # 13) Drop helper quantile columns to keep the output DataFrame clean
         df = df.drop(columns=["q1", "q3"], errors="ignore")
 
         return df
 
     @staticmethod
     def _compute_quantiles(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+        """
+        Compute q1 (25th percentile) and q3 (75th percentile) for the given metric per Survey.
+        """
         agg = (
             df.groupby(["Survey"], dropna=False)[metric]
             .agg(q1=lambda x: x.quantile(0.25), q3=lambda x: x.quantile(0.75))
@@ -143,12 +188,23 @@ class TransformationTrendSummary:
         )
         return agg
 
-    # ----------------------------
-    # JSON preparation (no data manipulation beyond structuring)
-    # ----------------------------
+    # ------------------------------------------------------------------------------------
+    # JSON preparation (structuring only; no business logic changes)
+    # ------------------------------------------------------------------------------------
     @staticmethod
     def _prepare_for_json(df: pd.DataFrame, survey: int) -> pd.DataFrame:
-        col_names = [
+        """
+        Create an ordered subset combining Driver and Question rows for the given survey.
+
+        Rules applied:
+        - Lowercase Driver and Description for consistency
+        - Filter to drivers with significant question movement (when score_diff has no nulls)
+        - Sort by driver_rank and Driver, prune rows lacking all key fields
+        - Rename driver_performance_change_from_last_cycle -> overall_change_from_last_cyle (typo preserved)
+        - Forward-fill group-wise fields to avoid repetition
+        - Keep only the required output columns
+        """
+        required_cols = [
             "Driver",
             "Type",
             "Description",
@@ -162,47 +218,64 @@ class TransformationTrendSummary:
             "driver_performance_change_from_last_cycle",
         ]
 
-        df_demo = df[(df.Survey == survey)].reset_index(drop=True).drop_duplicates()
+        df_demo = df[df["Survey"] == survey].reset_index(drop=True).drop_duplicates()
 
         if "Driver" in df_demo.columns:
-            df_demo.loc[:, "Driver"] = df_demo["Driver"].str.lower()
+            df_demo["Driver"] = df_demo["Driver"].str.lower()
         if "Description" in df_demo.columns:
-            df_demo.loc[:, "Description"] = df_demo["Description"].str.lower()
+            df_demo["Description"] = df_demo["Description"].str.lower()
 
-        # filter relevant drivers: significant question movement
+        # Filter relevant drivers: significant question movement (only if score_diff has no nulls)
         if df_demo["score_diff"].notnull().all():
             drivers_ls = (
                 df_demo[
-                    (df_demo.Type == "Question")
-                    & ((df_demo.score_diff_flag.notnull()) | (df_demo.score_diff.abs().gt(10)))
-                ]
-                .Driver.unique()
+                    (df_demo["Type"] == "Question")
+                    & ((df_demo["score_diff_flag"].notnull()) | (df_demo["score_diff"].abs().gt(10)))
+                ]["Driver"]
+                .unique()
                 .tolist()
             )
-            df_demo = df_demo[df_demo.Driver.isin(drivers_ls)].reset_index(drop=True)
+            df_demo = df_demo[df_demo["Driver"].isin(drivers_ls)].reset_index(drop=True)
 
-        # sort and prune
+        # Sort and prune rows with no useful information across key fields
         df_demo = df_demo.sort_values(by=["driver_rank", "Driver"])
         df_demo = df_demo.dropna(
-            subset=["score_diff", "change_from_last_cycle", "Employee Perception", "driver_performance_change_from_last_cycle"],
+            subset=[
+                "score_diff",
+                "change_from_last_cycle",
+                "Employee Perception",
+                "driver_performance_change_from_last_cycle",
+            ],
             how="all",
         )
 
-        # rename and forward-fill group-wise fields
+        # Rename and forward-fill group-wise display fields
         df_demo = df_demo.rename(
             columns={"driver_performance_change_from_last_cycle": "overall_change_from_last_cyle"}
         )
-        df_demo.loc[:, "overall_change_from_last_cyle"] = df_demo.groupby(["Driver"])["overall_change_from_last_cyle"].ffill()
-        df_demo.loc[:, "employee_confidence_level"] = df_demo.groupby(["Driver"])["employee_confidence_level"].ffill()
+        df_demo["overall_change_from_last_cyle"] = df_demo.groupby(["Driver"])["overall_change_from_last_cyle"].ffill()
+        df_demo["employee_confidence_level"] = df_demo.groupby(["Driver"])["employee_confidence_level"].ffill()
 
-        # retain only required columns for JSON creation
-        keep_cols = [c for c in col_names if c in df_demo.columns]
+        # Retain only required columns present in the data
+        keep_cols = [c for c in required_cols if c in df_demo.columns]
         df_demo = df_demo[keep_cols]
 
         return df_demo
 
     @staticmethod
     def _create_json(df_demo: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        Convert the prepared DataFrame to grouped JSON with question-level insights.
+
+        Grouping keys (when present):
+        - driver_rank
+        - Driver
+        - overall_change_from_last_cyle
+        - employee_confidence_level
+
+        Each group's value contains:
+        - "Question Insight": a list of { Description, Employee Perception, change_from_last_cycle }
+        """
         group_cols = ["driver_rank", "Driver", "overall_change_from_last_cyle", "employee_confidence_level"]
         present_group_cols = [c for c in group_cols if c in df_demo.columns]
 
@@ -217,10 +290,13 @@ class TransformationTrendSummary:
         final_json = json.loads(final_json_str)
         return TransformationTrendSummary._clean_empty(final_json)
 
-    # ----------------------------
+    # ------------------------------------------------------------------------------------
     # Public quantiles (pandas 2 compatible)
-    # ----------------------------
+    # ------------------------------------------------------------------------------------
     def quantile_diff(self, train_data: pd.DataFrame, metric: str) -> pd.DataFrame:
+        """
+        Convenience wrapper to compute q1/q3 per Survey for any metric column.
+        """
         agg = (
             train_data.groupby(["Survey"], dropna=False)[metric]
             .agg(q1=lambda x: x.quantile(0.25), q3=lambda x: x.quantile(0.75))
