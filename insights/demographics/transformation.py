@@ -19,7 +19,7 @@ class DemographicsTransformationSummary:
         self.train_data = train_data
         self.survey = survey
         self.demographics_columns = demographics_columns or [
-            "People Manager", "Tenure Calc", "Work City", "Organization", "Department"
+            "People Manager", "Tenure Calc", "Work City", "Organization", "Department Name"
         ]
 
     def build_prompt(self) -> List[Dict[str, Any]]:
@@ -302,22 +302,22 @@ class DemographicsTransformationSummary:
 
 
 if __name__ == "__main__":
-    survey = 2
+    survey = 3
     # Example usage: expects demographics columns present in CSV
     # Update the path to point to your demographics dataset if different
-    train_data = pd.read_csv("data/TIAA_3_4.csv", index_col=False)
+    train_data = pd.read_csv("data/_with_qcode_as_select_driver_qcode_Driver_as_Type_off_track_perc_202511131332.csv", index_col=False)
 
-    demographics_columns = ["People Manager", "Tenure Calc", "Work City", "Organization", "Department"]
+    demographics_columns = ["People Manager", "Tenure Calc", "Work City", "Organization", "Department Name"]
     ob = DemographicsTransformationSummary(train_data=train_data, survey=survey, demographics_columns=demographics_columns)
     prompt = ob.build_prompt()
     convert_df = ob.convert_data(train_data.copy(), segment_col=demographics_columns[0])
 
-    with open("insights/drivers/sample_output/demographics/transformation_convert_data_v2.json", "w") as f:
+    with open("insights/drivers/sample_output/demographics/TIAA_3_4_transformation_convert_data_v2.json", "w") as f:
         json.dump(convert_df.to_dict(), f, indent=4)
 
     json_creation = ob._create_json(ob._prepare_for_json(convert_df, survey, segment_col=demographics_columns[0]))
 
-    with open("insights/drivers/sample_output/demographics/transformation_json_creation_v2.json", "w") as f:
+    with open("insights/drivers/sample_output/demographics/TIAA_3_4_transformation_json_creation_v2.json", "w") as f:
         json.dump(json_creation, f, indent=4)
 
     diff = ob.quantile_diff(convert_df, "Score", segment_col=demographics_columns[0])
